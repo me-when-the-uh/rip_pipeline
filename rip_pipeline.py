@@ -765,7 +765,7 @@ def fmt_db(x):
     return f"{x:+.2f}"
 
 
-def emit_report(stems, peaks, gains, outliers, avg_peak, final_dir, ffmpeg):
+def emit_report(stems, peaks, gains, outliers, avg_peak, final_dir, ffmpeg, verify=True):
     print("\n" + "=" * 72)
     print("RIP PIPELINE REPORT")
     print("=" * 72)
@@ -788,24 +788,25 @@ def emit_report(stems, peaks, gains, outliers, avg_peak, final_dir, ffmpeg):
     else:
         print("\nNo outliers detected.")
 
-    # optional verification: re-measure final peaks
-    print("\nVerification (final peaks):")
-    all_ok = True
-    for stem in stems:
-        final = final_dir / f"{stem}.wav"
-        if not final.exists():
-            continue
-        fp = get_peak_db(final, ffmpeg)
-        fdiff = fp - avg_peak
-        ok = abs(fdiff) <= PEAK_TOLERANCE_DB or (
-            outliers.get(stem) and abs(fdiff) <= OUTLIER_THRESHOLD_DB + 1e-6
-        )
-        if not ok:
-            all_ok = False
-        mark = "ok" if ok else "CHECK"
-        print(f"  - {stem:<44}{fmt_db(fp):>9}  ({mark})")
-    print("\nAll final peaks within tolerance." if all_ok else
-          "\nWARNING: some final peaks are outside tolerance.")
+    if verify:
+        # optional verification: re-measure final peaks
+        print("\nVerification (final peaks):")
+        all_ok = True
+        for stem in stems:
+            final = final_dir / f"{stem}.wav"
+            if not final.exists():
+                continue
+            fp = get_peak_db(final, ffmpeg)
+            fdiff = fp - avg_peak
+            ok = abs(fdiff) <= PEAK_TOLERANCE_DB or (
+                outliers.get(stem) and abs(fdiff) <= OUTLIER_THRESHOLD_DB + 1e-6
+            )
+            if not ok:
+                all_ok = False
+            mark = "ok" if ok else "CHECK"
+            print(f"  - {stem:<44}{fmt_db(fp):>9}  ({mark})")
+        print("\nAll final peaks within tolerance." if all_ok else
+              "\nWARNING: some final peaks are outside tolerance.")
 
 
 def analyze_and_normalize(track_inputs, final_dir, ffmpeg, avg_peak=None,
@@ -842,11 +843,43 @@ def analyze_and_normalize(track_inputs, final_dir, ffmpeg, avg_peak=None,
 
 
 # --------------------------------------------------------------------------
+# Interactive step chooser (used when launched with no playlist / no --step)
+# --------------------------------------------------------------------------
+def prompt_for_step():
+    """Prompt for what to do when no playlist and no explicit --step were given.
+
+    Returns (mode, playlist) where mode is one of 'analyse', 'analyse_combined',
+    'tweak', 'rip', and playlist is the chosen .m3u path (or None for the others).
+    """
+    print("\nNo playlist provided. Choose what to do:")
+    print("  1) Analyse audio only              - report peak loudness, make no changes")
+    print("  2) Analyse + tweak combined audio  - normalize WAVs next to this script into final/")
+    print("  3) Analyse and tweak (full)        - combine channels + normalize into final/")
+    print("  4) Rip from a playlist             - you'll be asked for the .m3u path")
+    while True:
+        choice = input("Choice [1/2/3/4]: ").strip()
+        if choice == "1":
+            return "analyse", None
+        if choice == "2":
+            return "analyse_combined", None
+        if choice == "3":
+            return "tweak", None
+        if choice == "4":
+            path = input("Playlist (.m3u) path: ").strip()
+            if path:
+                return "rip", path
+            print("No path entered; please choose again.")
+            continue
+        print("Please enter 1, 2, 3, or 4.")
+
+
+# --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="Game Boy / generic soundtrack rip -> combine -> normalize pipeline.")
+        description="Game Boy / generic soundtrack rip -> combine -> normalize pipeline. "
+                    "Run with no arguments for an interactive step menu.")
     ap.add_argument("m3u", nargs="?",
                     help="input .m3u playlist of .vgm/.vgz files "
                          "(optional for --step combine/normalize)")
@@ -866,6 +899,29 @@ def main():
     ap.add_argument("--no-normalize", action="store_true",
                     help="stop after combine (skip peak normalization)")
     args = ap.parse_args()
+
+    # No playlist and no explicit step -> let the user pick what to do.
+    if args.m3u is None and args.step == "rip":
+        mode, playlist = prompt_for_step()
+        if mode == "analyse":
+            args.step = "normalize"
+            args.analyse_only = True
+        elif mode == "analyse_combined":
+            # Already-combined WAVs live next to this script; normalize them
+            # in place (top-level only, subdirectories ignored) into final/.
+            args.step = "normalize"
+            args.input_dir = str(SCRIPT_DIR)
+            if args.output is None:
+                args.output = str(SCRIPT_DIR)
+        elif mode == "tweak":
+            args.step = "combine"
+        elif mode == "rip":
+            args.m3u = playlist
+            args.step = "rip"
+        # In interactive mode operate relative to the current directory,
+        # unless the user explicitly passed -o/--output (or a choice set it).
+        if args.output is None:
+            args.output = "."
 
     step = args.step
 
@@ -1021,6 +1077,18 @@ def main():
             raise SystemExit(f"No WAV files found in {input_dir}.")
         print(f"\nNormalize-only step: analyzing {len(wavs)} WAV file(s) in {input_dir}")
         track_inputs = [(w.stem, w) for w in wavs]
+
+        if getattr(args, "analyse_only", False):
+            # Analysis only: report peaks, write nothing.
+            peaks = {w.stem: get_peak_db(w, ffmpeg) for w in wavs}
+            valid = [p for p in peaks.values() if math.isfinite(p)]
+            target = (sum(valid) / len(valid)) if valid else 0.0
+            print(f"\nAnalysis only (no changes written) for {len(wavs)} WAV file(s) in {input_dir}")
+            emit_report(list(peaks.keys()), peaks,
+                        {s: 0.0 for s in peaks}, {s: False for s in peaks},
+                        target, input_dir, ffmpeg, verify=False)
+            return
+
         if args.dry_run:
             print("[DRY RUN] would normalize the following:")
         analyze_and_normalize(track_inputs, final_dir, ffmpeg,

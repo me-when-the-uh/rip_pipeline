@@ -51,6 +51,35 @@ python rip_pipeline.py playlist.m3u --dry-run          # print commands, do noth
 python rip_pipeline.py --step normalize --input-dir my_tracks
 ```
 
+### Interactive menu (no arguments)
+
+Running the script with no playlist and no `--step` opens a short menu so you can
+pick where to start:
+
+```text
+No playlist provided. Choose what to do:
+  1) Analyse audio only              - report peak loudness, make no changes
+  2) Analyse + tweak combined audio  - normalize WAVs next to this script into final/
+  3) Analyse and tweak (full)        - combine channels + normalize into final/
+  4) Rip from a playlist             - you'll be asked for the .m3u path
+Choice [1/2/3/4]:
+```
+
+- **Analyse only** runs the normalize step in report-only mode: it measures each
+  WAV's peak (first/last 1 s trimmed) and prints the average peak and any
+  outliers, but writes nothing.
+- **Analyse + tweak combined audio** normalizes WAVs that are already combined
+  and sitting next to the script (top-level only; subdirectories such as `0-2/`,
+  `3/`, `combined/`, `final/` are ignored). Results are written into `final/`
+  next to the script. Use this when you already have combined tracks and just
+  want level matching without re-combining.
+- **Analyse and tweak (full)** runs the full pipeline from the combine step
+  (combine channels, then normalize) and writes results into `final/`. It
+  operates on the current directory, so place your ripped group folders (e.g.
+  `0-2/`, `3/`) there first, or pass `-o/--output`.
+- **Rip from a playlist** falls back to the normal rip flow and prompts for the
+  `.m3u` path.
+
 ### Game Boy specifics
 
 Channels 0-2 (square + wave) are ripped at volume `0.9` into `0-2/`, and the
