@@ -1,0 +1,3 @@
+[submodule "vgm2wav-mute"]
+	path = vgm2wav-mute
+	url = ../vgm2wav-mute

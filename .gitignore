@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.state.json
+
+# Build artifacts from the vgm2wav-mute submodule (it ships its own .gitignore too)
+vgm2wav-mute/build/
+vgm2wav-mute/build-*/
+
+# Generated pipeline output
+rip_output/
+combined/
+0-2/
+3/
+1/
+2/
+*.wav
+
+# Test / game data
+*.m3u
+
+# Editors / OS
+.vs/
+Thumbs.db
+.DS_Store
