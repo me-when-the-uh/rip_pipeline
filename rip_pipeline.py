@@ -32,8 +32,8 @@ Arguments:
                           playlist). Optional when --step is combine/normalize.
     -o, --output DIR    output root (default: <playlist_stem>_rip next to the
                           playlist, or ./rip_output when no playlist is given)
-    --gameboy             force the Game Boy preset (groups 0-2 @0.9, 3 @0.72,
-                          SBOY core). Also used by --step combine to assign the
+    --gameboy             force the Game Boy preset (groups 0-2 @GB_VOLUME_MAIN, 3 @GB_VOLUME_NOISE,
+                          GB_CORE_NAME core). Also used by --step combine to assign the
                           Game Boy baseline volumes when deriving groups from folders.
     --step {rip,combine,normalize}
                           start the pipeline at this step (default: rip)
@@ -51,9 +51,9 @@ ffmpeg must be on PATH (or passed via --ffmpeg).
 
 Example session (Game Boy):
     $ python rip_pipeline.py "Operation C (Game Boy)/test3.m3u"
-    # detects Game Boy, rips groups 0-2 (vol 0.9) and 3 (vol 0.72) with the
-    # SBOY core into 0-2/ and 3/, combines them, then normalizes every track
-    # to the average peak (outliers >3.5 dB capped at +/-3.5 dB).
+    # detects Game Boy, rips groups 0-2 (vol GB_VOLUME_MAIN) and 3 (vol GB_VOLUME_NOISE) with the
+    # GB_CORE_NAME core into 0-2/ and 3/, combines them, then normalizes every track
+    # to the average peak (outliers >OUTLIER_THRESHOLD_DB dB capped at +/-OUTLIER_THRESHOLD_DB dB).
 
 Example (other system, interactive):
     $ python rip_pipeline.py "Some SNES OST.m3u"
@@ -67,21 +67,21 @@ Example (manual rip, level only):
 
 Design notes (see plans/rip_pipeline.md):
   * Ripping is done at FULL volume (no gain at rip time). Per-group baseline
-    gain (e.g. Game Boy 0-2 @0.9, channel 3 @0.72) is applied later,
+    gain (e.g. Game Boy 0-2 @GB_VOLUME_MAIN, channel 3 @GB_VOLUME_NOISE) is applied later,
     during the combine step, so the raw channel rips stay reusable.
   * Game Boy is detected automatically (device type 0x13) and uses the
-    SBOY core (forced via --core 0x13=SBOY). The preset is:
-        group "0-2" -> channels 0,1,2 @ volume 0.9
-        group "3"   -> channel 3      @ volume 0.72
+    GB_CORE_NAME core (forced via --core 0x13=SBOY). The preset is:
+        group "0-2" -> channels 0,1,2 @ volume GB_VOLUME_MAIN
+        group "3"   -> channel 3      @ volume GB_VOLUME_NOISE
   * Other systems drop into an interactive menu where the user builds groups
     out of single (5), span (0-7) or combo (0,1,3-12,17,21) channel
     specs, each with its own volume. Unmanaged channels are shown; pressing
     a key proceeds with the queue.
-  * Normalization: peak must be within +/-0.6 dB of the average peak
-    (no change inside that window). Tracks further than 3.5 dB off are
-    outliers and are only adjusted by +/-3.5 dB (capped), never more.
+  * Normalization: peak must be within +/-PEAK_TOLERANCE_DB dB of the average peak
+    (no change inside that window). Tracks further than OUTLIER_THRESHOLD_DB dB off are
+    outliers and are only adjusted by +/-OUTLIER_THRESHOLD_DB dB (capped), never more.
     RMS is ignored. Outliers are listed separately in the report.
-  * Peak analysis ignores the first and last 1.0 s of every track (PEAK_TRIM_SEC)
+  * Peak analysis ignores the first and last PEAK_TRIM_SEC s of every track
     so random edge pops/clicks don't skew the measurement.
 
 Dependencies: vgm2wav-mute (built with SBOY) and ffmpeg/ffprobe.
@@ -117,15 +117,74 @@ def _dump(res, verbose):
 # --------------------------------------------------------------------------
 GAMEBOY_TYPE = 0x13  # DEVID_GB_DMG
 
+# Game Boy configuration
+GB_VOLUME_MAIN = 0.86     # baseline volume for channels 0-2 (Square 1, Square 2, Wave)
+GB_VOLUME_NOISE = 0.66   # baseline volume for channel 3 (Noise)
+GB_CHANNEL_COUNT = 4     # number of channels on Game Boy
+GB_CORE_NAME = "SBOY"    # core name for Game Boy emulation
+
 # Game Boy preset: list of (group_dir_name, [channels], baseline_volume)
 GB_PRESET = [
-    ("0-2", [0, 1, 2], 0.9),
-    ("3",   [3],        0.72),
+    ("0-2", [0, 1, 2], GB_VOLUME_MAIN),
+    ("3",   [3],        GB_VOLUME_NOISE),
 ]
 
+# Normalization settings
 PEAK_TOLERANCE_DB = 0.6    # inside +/- this of the average => leave alone
 OUTLIER_THRESHOLD_DB = 3.5  # beyond this => cap the adjustment at +/- this
 PEAK_TRIM_SEC = 1.0        # ignore first/last N seconds for peak analysis (edge pops)
+GAIN_THRESHOLD_DB = 0.01   # minimum gain change to apply (below this, copy instead of normalize)
+
+# Default values
+DEFAULT_VOLUME = 1.0       # default baseline volume for groups
+GROUP_NAME_OTHER = "other"  # name for the "other" group in multi-device setups
+
+# Mute syntax
+MUTE_DISABLED_TRUE = "Disabled=True"
+MUTE_CHANNEL_PREFIX = "Ch"
+
+# File extensions
+EXT_VGM = ".vgm"
+EXT_VGZ = ".vgz"
+EXT_WAV = ".wav"
+
+# M3U parsing
+M3U_FILE_PREFIX = "file://"
+
+# WAV file format constants
+WAV_MAGIC = b"RIFF"
+WAV_FORMAT = b"WAVE"
+WAV_FMT_CHUNK = b"fmt "
+WAV_DATA_CHUNK = b"data"
+WAVEFORMATEXTENSIBLE_TAG = 0xFFFE
+PCM_SUBFORMAT = 0x0001
+SIGNED_24BIT_MASK = 0x800000
+SIGNED_24BIT_BIAS = 0x1000000
+
+# Struct format characters
+LITTLE_ENDIAN = "<"
+SIGNED_16BIT = "h"
+SIGNED_32BIT = "i"
+
+# ffmpeg flags
+FFMPEG_OVERWRITE = "-y"
+FFMPEG_HIDE_BANNER = "-hide_banner"
+FFMPEG_LOGLEVEL = "-loglevel"
+FFMPEG_LOG_ERROR = "error"
+FFMPEG_INPUT = "-i"
+FFMPEG_FILTER_COMPLEX = "-filter_complex"
+FFMPEG_MAP = "-map"
+FFMPEG_CODEC_AUDIO = "-c:a"
+FFMPEG_CODEC_PCM_S16LE = "pcm_s16le"
+FFMPEG_AUDIO_FILTER = "-af"
+FFMPEG_FORMAT_NULL = "-f"
+FFMPEG_OUTPUT_NULL = "-"
+
+# ffmpeg filter strings
+FFMPEG_PEAK_FILTER = "astats"
+FFMPEG_TRIM = "atrim"
+FFMPEG_ASETPTS = "asetpts"
+FFMPEG_AREVERSE = "areverse"
 
 # Persisted pipeline state (written during --step rip, read by later steps so
 # they know the group layout without re-probing / re-ripping).
@@ -225,8 +284,8 @@ def derive_groups_from_dirs(out_dir, gameboy):
 
     Used by --step combine when no saved state exists (e.g. a manual rip).
     Each qualifying subdirectory becomes one group. With --gameboy the Game Boy
-    baseline volumes are assigned by folder name (0-2 -> 0.9, 3 -> 0.72);
-    otherwise every group defaults to volume 1.0.
+    baseline volumes are assigned by folder name (0-2 -> GB_VOLUME_MAIN, 3 -> GB_VOLUME_NOISE);
+    otherwise every group defaults to DEFAULT_VOLUME.
     """
     groups = []
     if not out_dir.is_dir():
@@ -234,20 +293,20 @@ def derive_groups_from_dirs(out_dir, gameboy):
     for d in sorted(out_dir.iterdir()):
         if not d.is_dir():
             continue
-        if not any(d.glob("*.wav")):
+        if not any(d.glob(f"*{EXT_WAV}")):
             continue
         name = d.name
-        vol = 1.0
+        vol = DEFAULT_VOLUME
         if gameboy:
             if name == "0-2":
-                vol = 0.9
+                vol = GB_VOLUME_MAIN
             elif name == "3":
-                vol = 0.72
+                vol = GB_VOLUME_NOISE
         groups.append({
             "name": name,
             "dev_type": GAMEBOY_TYPE if gameboy else 0,
             "dev_inst": 0,
-            "dev_ch": 4 if gameboy else 0,
+            "dev_ch": GB_CHANNEL_COUNT if gameboy else 0,
             "keep": set(),
             "disable_dev": False,
             "mute_other_devs": False,
@@ -263,7 +322,7 @@ def discover_tracks_from_groups(out_dir, groups):
         gdir = out_dir / g["name"]
         if not gdir.is_dir():
             continue
-        for w in gdir.glob("*.wav"):
+        for w in gdir.glob(f"*{EXT_WAV}"):
             stems.add(w.stem)
     return sorted(stems)
 
@@ -279,13 +338,13 @@ def parse_m3u(m3u_path):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("file://"):
-            line = line[7:]
+        if line.startswith(M3U_FILE_PREFIX):
+            line = line[len(M3U_FILE_PREFIX):]
         p = Path(line)
         if not p.is_absolute():
             p = base / p
         p = p.resolve()
-        if p.suffix.lower() in (".vgm", ".vgz") and p.exists():
+        if p.suffix.lower() in (EXT_VGM, EXT_VGZ) and p.exists():
             tracks.append(p)
         else:
             print(f"  (skipping missing/unsupported entry: {line})", file=sys.stderr)
@@ -464,14 +523,14 @@ def finalize_groups(groups, devices, configured_dev):
     if len(devices) <= 1:
         return groups
     other = {
-        "name": "other",
+        "name": GROUP_NAME_OTHER,
         "dev_type": configured_dev["type"],
         "dev_inst": configured_dev["inst"],
         "dev_ch": configured_dev["ch"],
         "keep": set(range(configured_dev["ch"])),
         "disable_dev": True,        # silence the configured device entirely
         "mute_other_devs": False,  # keep the other devices at full volume
-        "volume": 1.0,
+        "volume": DEFAULT_VOLUME,
     }
     return groups + [other]
 
@@ -491,11 +550,11 @@ def rip_group(vgm2wav_mute, track_path, group, devices, out_dir, verbose=False, 
     mute_args = []
     if group.get("disable_dev"):
         mute_args += ["--mute",
-                      f"0x{group['dev_type']:X}#{group['dev_inst']}.Disabled=True"]
+                      f"0x{group['dev_type']:X}#{group['dev_inst']}.{MUTE_DISABLED_TRUE}"]
     else:
         complement = [c for c in range(group["dev_ch"]) if c not in group["keep"]]
         if complement:
-            chans = ",".join(f"Ch{c}" for c in complement)
+            chans = ",".join(f"{MUTE_CHANNEL_PREFIX}{c}" for c in complement)
             mute_args += ["--mute",
                           f"0x{group['dev_type']:X}#{group['dev_inst']}.{chans}"]
     if group.get("mute_other_devs"):
@@ -503,11 +562,11 @@ def rip_group(vgm2wav_mute, track_path, group, devices, out_dir, verbose=False, 
             if e["type"] == group["dev_type"] and e["inst"] == group["dev_inst"]:
                 continue
             mute_args += ["--mute",
-                          f"0x{e['type']:X}#{e['inst']}.Disabled=True"]
+                          f"0x{e['type']:X}#{e['inst']}.{MUTE_DISABLED_TRUE}"]
 
     core_args = []
     if group["dev_type"] == GAMEBOY_TYPE:
-        core_args = ["--core", f"0x{group['dev_type']:X}=SBOY"]
+        core_args = ["--core", f"0x{group['dev_type']:X}={GB_CORE_NAME}"]
 
     cmd = [str(vgm2wav_mute), *core_args, *mute_args, str(track_path), str(out_wav)]
     print(f"    [rip ] {group['name']}/{out_wav.name}")
@@ -563,20 +622,20 @@ def combine_track(track_stem, groups, out_dir, combined_dir, ffmpeg, verbose=Fal
 
     if dry_run:
         cmd = [
-            str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
-            *sum((["-i", str(p)] for p in inputs), []),
-            "-filter_complex", filt, "-map", "[out]",
-            "-c:a", "pcm_s16le", str(out_path),
+            str(ffmpeg), FFMPEG_OVERWRITE, FFMPEG_HIDE_BANNER, FFMPEG_LOGLEVEL, FFMPEG_LOG_ERROR,
+            *sum(([FFMPEG_INPUT, str(p)] for p in inputs), []),
+            FFMPEG_FILTER_COMPLEX, filt, FFMPEG_MAP, "[out]",
+            FFMPEG_CODEC_AUDIO, FFMPEG_CODEC_PCM_S16LE, str(out_path),
         ]
         print("           " + " ".join(cmd))
         return out_path
 
     cmd = [
-        str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
-        *sum((["-i", str(p)] for p in inputs), []),
-        "-filter_complex", filt,
-        "-map", "[out]",
-        "-c:a", "pcm_s16le",
+        str(ffmpeg), FFMPEG_OVERWRITE, FFMPEG_HIDE_BANNER, FFMPEG_LOGLEVEL, FFMPEG_LOG_ERROR,
+        *sum(([FFMPEG_INPUT, str(p)] for p in inputs), []),
+        FFMPEG_FILTER_COMPLEX, filt,
+        FFMPEG_MAP, "[out]",
+        FFMPEG_CODEC_AUDIO, FFMPEG_CODEC_PCM_S16LE,
         str(out_path),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
@@ -595,7 +654,8 @@ def peak_db_ffmpeg(path, ffmpeg, trim_sec=PEAK_TRIM_SEC):
     dropped so edge pops/clicks don't skew the measurement."""
     def _run(filt):
         res = subprocess.run(
-            [str(ffmpeg), "-hide_banner", "-i", str(path), "-af", filt, "-f", "null", "-"],
+            [str(ffmpeg), FFMPEG_HIDE_BANNER, FFMPEG_INPUT, str(path), FFMPEG_AUDIO_FILTER, filt,
+             FFMPEG_FORMAT_NULL, FFMPEG_OUTPUT_NULL],
             capture_output=True, text=True, errors="replace",
         )
         for line in res.stderr.splitlines():
@@ -608,13 +668,13 @@ def peak_db_ffmpeg(path, ffmpeg, trim_sec=PEAK_TRIM_SEC):
                     pass
         return None
     # Drop first and last `trim_sec` seconds (reverse trick needs no duration).
-    trimmed = (f"atrim={trim_sec},asetpts=PTS-STARTPTS,areverse,"
-               f"atrim={trim_sec},asetpts=PTS-STARTPTS,astats")
+    trimmed = (f"{FFMPEG_TRIM}={trim_sec},{FFMPEG_ASETPTS}=PTS-STARTPTS,{FFMPEG_AREVERSE},"
+               f"{FFMPEG_TRIM}={trim_sec},{FFMPEG_ASETPTS}=PTS-STARTPTS,{FFMPEG_PEAK_FILTER}")
     v = _run(trimmed)
     if v is not None:
         return v
     # Fallback: very short track where trimming would empty it -> analyze whole.
-    return _run("astats")
+    return _run(FFMPEG_PEAK_FILTER)
 
 
 def peak_db_python(path, trim_sec=PEAK_TRIM_SEC):
@@ -623,7 +683,7 @@ def peak_db_python(path, trim_sec=PEAK_TRIM_SEC):
     The first and last `trim_sec` seconds are skipped."""
     with open(str(path), "rb") as f:
         head = f.read(12)
-        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        if len(head) < 12 or head[:4] != WAV_MAGIC or head[8:12] != WAV_FORMAT:
             return 0.0
         nch = sw = rate = 0
         # locate the 'fmt ' chunk
@@ -632,19 +692,19 @@ def peak_db_python(path, trim_sec=PEAK_TRIM_SEC):
             if len(hdr) < 8:
                 break
             cid = hdr[:4]
-            size = struct.unpack("<I", hdr[4:8])[0]
-            if cid == b"fmt ":
+            size = struct.unpack(f"{LITTLE_ENDIAN}I", hdr[4:8])[0]
+            if cid == WAV_FMT_CHUNK:
                 fmt = f.read(size)
-                wtag = struct.unpack("<H", fmt[0:2])[0]
-                nch = struct.unpack("<H", fmt[2:4])[0]
-                rate = struct.unpack("<I", fmt[4:8])[0]
-                bits = struct.unpack("<H", fmt[14:16])[0]
+                wtag = struct.unpack(f"{LITTLE_ENDIAN}H", fmt[0:2])[0]
+                nch = struct.unpack(f"{LITTLE_ENDIAN}H", fmt[2:4])[0]
+                rate = struct.unpack(f"{LITTLE_ENDIAN}I", fmt[4:8])[0]
+                bits = struct.unpack(f"{LITTLE_ENDIAN}H", fmt[14:16])[0]
                 sw = bits // 8
-                if wtag == 0xFFFE:  # extensible -> subformat in first 2 bytes of GUID
-                    sub = struct.unpack("<H", fmt[16:18])[0]
-                    if sub != 0x0001:
+                if wtag == WAVEFORMATEXTENSIBLE_TAG:  # extensible -> subformat in first 2 bytes of GUID
+                    sub = struct.unpack(f"{LITTLE_ENDIAN}H", fmt[16:18])[0]
+                    if sub != PCM_SUBFORMAT:
                         return 0.0
-                elif wtag != 0x0001:
+                elif wtag != PCM_SUBFORMAT:
                     return 0.0
                 break
             f.seek(size + (size & 1), 1)
@@ -656,8 +716,8 @@ def peak_db_python(path, trim_sec=PEAK_TRIM_SEC):
             if len(hdr) < 8:
                 break
             cid = hdr[:4]
-            size = struct.unpack("<I", hdr[4:8])[0]
-            if cid == b"data":
+            size = struct.unpack(f"{LITTLE_ENDIAN}I", hdr[4:8])[0]
+            if cid == WAV_DATA_CHUNK:
                 break
             f.seek(size + (size & 1), 1)
         maxv = float(1 << (sw * 8 - 1))
@@ -682,11 +742,11 @@ def peak_db_python(path, trim_sec=PEAK_TRIM_SEC):
                 for i in range(cnt):
                     b = chunk[i * 3:(i + 1) * 3]
                     v = b[0] | (b[1] << 8) | (b[2] << 16)
-                    if v & 0x800000:
-                        v -= 0x1000000
+                    if v & SIGNED_24BIT_MASK:
+                        v -= SIGNED_24BIT_BIAS
                     vals.append(v)
             else:
-                fmt = "<" + ("h" if sw == 2 else "i") * cnt
+                fmt = f"{LITTLE_ENDIAN}" + (SIGNED_16BIT if sw == 2 else SIGNED_32BIT) * cnt
                 vals = list(struct.unpack(fmt, chunk))
                 if not signed:
                     vals = [v - 128 for v in vals]
@@ -732,17 +792,17 @@ def normalize_track(track_stem, src_path, final_dir, ffmpeg, avg_peak,
         outlier = False
 
     dst = final_dir / f"{track_stem}.wav"
-    if abs(gain) < 0.01:
+    if abs(gain) < GAIN_THRESHOLD_DB:
         if dry_run:
             print(f"    [copy] {track_stem}.wav (gain ~0)")
         else:
             shutil.copy(src_path, dst)
     else:
         cmd = [
-            str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(src_path),
-            "-af", f"volume={gain:.3f}dB",
-            "-c:a", "pcm_s16le",
+            str(ffmpeg), FFMPEG_OVERWRITE, FFMPEG_HIDE_BANNER, FFMPEG_LOGLEVEL, FFMPEG_LOG_ERROR,
+            FFMPEG_INPUT, str(src_path),
+            FFMPEG_AUDIO_FILTER, f"volume={gain:.3f}dB",
+            FFMPEG_CODEC_AUDIO, FFMPEG_CODEC_PCM_S16LE,
             str(dst),
         ]
         if dry_run:
@@ -960,8 +1020,8 @@ def main():
         if args.gameboy:
             print("Forcing Game Boy preset (--gameboy).")
             # synthesize a GB device for the preset
-            gb_dev = {"type": GAMEBOY_TYPE, "inst": 0, "ch": 4, "name": "GameBoy DMG",
-                       "core": "SBOY", "names": ["Square 1", "Square 2", "Wave", "Noise"]}
+            gb_dev = {"type": GAMEBOY_TYPE, "inst": 0, "ch": GB_CHANNEL_COUNT, "name": "GameBoy DMG",
+                       "core": GB_CORE_NAME, "names": ["Square 1", "Square 2", "Wave", "Noise"]}
             devices = [gb_dev]
             groups, configured_dev = build_gameboy_queue(devices)
         else:
@@ -971,7 +1031,7 @@ def main():
                 raise SystemExit("Probe returned no devices; cannot continue.")
             if is_gameboy(devices):
                 print("Detected system: Game Boy -> applying preset "
-                      "(0-2 @0.9, 3 @0.72, SBOY core).")
+                      f"(0-2 @{GB_VOLUME_MAIN}, 3 @{GB_VOLUME_NOISE}, {GB_CORE_NAME} core).")
                 groups, configured_dev = build_gameboy_queue(devices)
             else:
                 names = ", ".join(d["name"] for d in devices)
